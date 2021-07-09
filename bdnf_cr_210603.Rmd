@@ -1,0 +1,278 @@
+---
+title: "BDNF and CR"
+author: "Bindoff, A. (Statistician)"
+date: "03/06/2021"
+output: 
+  html_document:
+    code_folding: 'hide'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+This script enables replication of the analysis performed in Collins, Hill, Bindoff, King, Alty, Summers, and Vickers 2021.  
+
+
+```{r}
+# load packages and extract data for analysis
+
+library(sjPlot)
+library(latex2exp)
+library(dplyr)
+margin <- .1
+
+
+# data cleaned using biomarkers_data_prep210513.R
+d0 <- readRDS("thbp_biomarkers_raw210513.rds") %>%
+  arrange(idcode) %>%
+  group_by(assay) %>%
+  filter(!duplicated(idcode)) %>%
+  tidyr::pivot_longer(cols = c(rep1, rep2, rep3, rep4), values_to = "pg_ml", names_to = "replicate") %>%
+  filter(!is.na(pg_ml)) %>%
+  group_by(assay, idcode) %>%
+  mutate(median_pg_ml = median(pg_ml),
+         diff = abs(pg_ml - median_pg_ml),
+         check = ifelse(diff > margin*median_pg_ml, FALSE, TRUE)) %>%
+  ungroup() %>%
+  filter(check) %>%
+  group_by(assay, idcode) %>%
+  mutate(mean_pg_ml = mean(pg_ml),
+         age_1 = age_1 + 8) %>%  # age_1 is baseline age (2010), bloods collected 2018
+  ungroup() %>%
+  group_by(assay) %>%
+  filter(!duplicated(idcode),
+         mean_pg_ml < 75000) %>%  # remove biologically implausible outliers (if any)
+  ungroup() %>%
+  tidyr::pivot_wider(id_cols = c('idcode',
+                                 'group',
+                                 'phase',
+                                 'age_1',
+                                 'pcr',
+                                 'mhq_edschool',
+                                 'mhq_edtotal',
+                                 'leq_ya_spec',
+                                 'leq_ya_nonspec',
+                                 'leq_ml_spec',
+                                 'leq_ml_nonspec',
+                                 'leq_ml_bonus',
+                                 'leq_ll_spec',
+                                 'leq_ll_nonspec',
+                                 'leq_ll_bonus',
+                                 'wtar_fsiq',
+                                 'gender',
+                                 'apoe',
+                                 'bdnf',
+                                 'all_courses_post2010_cp',
+                                 'hdr',
+                                 'max_phase'),
+                     values_from = mean_pg_ml, names_from = assay)
+
+d0 <- d0 %>% filter(!is.na(bdnf_serum))
+length(d0$group[d0$all_courses_post2010_cp > 0 & d0$group == 'Control'])
+length(d0$group[d0$all_courses_post2010_cp < 12.5 & d0$group == 'Experimental'])
+
+d0$group[d0$all_courses_post2010_cp > 0 & d0$group == 'Control'] <- 'Experimental'
+d0$group[d0$all_courses_post2010_cp < 12.5 & d0$group == 'Experimental'] <- 'Control'
+
+na2zero <- function(x){
+  x[is.na(x)] <- 0
+  x
+}
+d0$total_education <- na2zero(d0$mhq_edtotal) + na2zero(d0$all_courses_post2010_cp)/100 
+d0$ll_ed_years <- na2zero(d0$all_courses_post2010_cp)/100
+
+```
+
+```{r}
+# make Table 1
+library(table1)
+label(d0$bdnf_serum) <- "BDNF in serum (pg/ml)"
+label(d0$age_1) <- "Age (years)"
+label(d0$mhq_edtotal) <- "Education (early life)"
+label(d0$gender) <- "Gender"
+label(d0$pcr) <- "Prior cognitive reserve (z)"
+label(d0$bdnf) <- "BDNF Val66Met genotype"
+label(d0$leq_ya_spec) <- "LEQ young adulthood specific (education)"
+label(d0$leq_ya_nonspec) <- "LEQ young adulthood general"
+label(d0$leq_ml_spec) <- "LEQ midlife specific (occupation)"
+label(d0$leq_ml_nonspec) <- "LEQ midlife general"
+label(d0$leq_ml_bonus) <- "LEQ midlife bonus (education)"
+label(d0$leq_ll_spec) <- "LEQ later life specific (occupation)"
+label(d0$leq_ll_nonspec) <- "LEQ later life general"
+label(d0$leq_ll_bonus) <- "LEQ later life bonus (education)"
+
+d0 <- d0 %>%
+  mutate(group2 = ifelse(group == 'Experimental', 'University study', 'Control'))
+label(d0$ll_ed_years) <- "FTE Years of university study (THBP intervention)"
+table1(~ bdnf_serum + age_1 + gender + bdnf + mhq_edtotal + ll_ed_years + 
+         leq_ya_spec +
+         leq_ya_nonspec +
+         leq_ml_spec +
+         leq_ml_nonspec +
+         leq_ml_bonus +
+         leq_ll_spec +
+         leq_ll_nonspec +
+         leq_ll_bonus, d0)
+
+label(d0$bdnf_serum) <- "BDNF in serum log(pg/ml)"
+
+```
+
+
+
+```{r}
+# fit multiple regression models
+# m1 contains all variables including known and potential confounders 
+m1 <- lm(log(bdnf_serum) ~ age_1 +
+              bdnf +
+              gender +
+              wtar_fsiq +
+              ll_ed_years +
+              leq_ya_spec +
+              leq_ya_nonspec +
+              leq_ml_spec +
+              leq_ml_nonspec +
+              leq_ml_bonus,
+          d0)
+
+# m2 adjusts for age and terms with p < .10 in m1
+m2 <- lm(log(bdnf_serum) ~ age_1 +
+              bdnf +
+              gender +
+              leq_ya_spec +
+              leq_ml_bonus,
+          d0)
+
+# assess LEQ YA without LEQ ML bonus and vice-versa
+m1.ya <- lm(log(bdnf_serum) ~ age_1 +
+              bdnf +
+              gender +
+              leq_ya_spec,
+          d0)
+m1.ml <- lm(log(bdnf_serum) ~ age_1 +
+              bdnf +
+              gender +
+              leq_ml_bonus,
+          d0)
+
+# EXPLORATORY, look at interaction
+m1.int <- lm(log(bdnf_serum) ~ age_1 +
+              bdnf +
+              gender +
+              leq_ya_spec *
+              leq_ml_bonus,
+          d0)
+
+#tab_model(m, m1, show.p = FALSE, digits = 3, p.style = 'stars')
+tab_model(m1, m2, show.p = TRUE, digits = 3)
+
+```
+\
+
+
+```{r}
+#tab_model(m1.ya, m1.ml, show.p = FALSE, digits = 3, p.style = 'stars')
+
+tab_model(m1.ya, m1.ml, show.p = TRUE, digits = 3)
+
+```
+\
+
+
+```{r}
+
+# report Pearson correlation between YA & ML
+cor.test(d0$leq_ya_spec, d0$leq_ml_bonus)
+
+```
+\
+
+
+F-statistics  
+
+```{r}
+car::Anova(m1)
+car::Anova(m2)
+car::Anova(m1.int)
+
+```
+\
+
+Standardized effect sizes (partial eta-squared)   
+
+Estimated variance explained by variable x_i in model with x_k (k in {2,3,.., K}) variables  
+
+```{r}
+print(effectsize::eta_squared(m2, partial = TRUE, ci = .95), digits = 3)
+```
+\
+
+```{r}
+library(ggplot2)
+library(emmeans)
+
+em.ya <- emmeans(m2, ~ leq_ya_spec,
+              at = list(leq_ya_spec = seq(0, 46, by = 3)))
+em.ya <- em.ya %>% data.frame() %>%
+  mutate(label = 'LEQ young adulthood',
+         dimension = leq_ya_spec)
+
+em.ml <- emmeans(m2, ~ leq_ml_bonus,
+              at = list(leq_ml_bonus = seq(0, 46, by = 2)))
+
+em.ml <- em.ml %>% data.frame() %>%
+  mutate(label = 'LEQ midlife',
+         dimension = leq_ml_bonus)
+
+em <- bind_rows(em.ml, em.ya)
+pal <- c("#DC8E47",
+         "#3AC9FA")
+fig1a <- ggplot(em,
+       aes(x = dimension, y = exp(emmean), colour = label)) +
+  geom_point(data = d0, aes(x = leq_ya_spec, y = bdnf_serum), 
+             alpha = .4,
+             colour = pal[2]) +
+    geom_point(data = d0, aes(x = leq_ml_bonus, y = bdnf_serum), 
+               alpha = .4, 
+               colour = pal[1]) +
+  geom_ribbon(aes(ymin = exp(lower.CL), ymax = exp(upper.CL), fill = label),
+              alpha = .2,
+              colour = NA) +
+  geom_line() +
+  xlab("Education score") +
+  ylab("") +
+  theme_bw() +
+  scale_fill_manual(values = pal, name = "") +
+  scale_colour_manual(values = pal, name = "") +
+  theme(legend.position = 'bottom',
+        panel.grid = element_blank())
+
+em.age.gender <- emmeans(m1, ~ age_1 + gender,
+                         at = list(age_1 = seq(58, 86, by = 4)))
+
+pal <- c("#43419E",
+         "#F8B529")
+fig1b <- ggplot(em.age.gender %>% data.frame(),
+       aes(x = age_1, y = exp(emmean), colour = gender)) +
+  geom_point(data = d0, aes(x = age_1, y = bdnf_serum), 
+             alpha = .4) +
+  geom_ribbon(aes(ymin = exp(lower.CL), ymax = exp(upper.CL),
+                  fill = gender),
+              alpha = .2,
+              colour = NA) +
+  geom_line() +
+  xlab("Age (years)") +
+  ylab("Serum BDNF (pg/ml)") +
+  theme_bw() +
+  scale_fill_manual(values = pal, name = "") +
+  scale_colour_manual(values = pal, name = "") +
+  theme(legend.position = 'bottom',
+        panel.grid = element_blank())
+
+cowplot::plot_grid(fig1b,
+                   fig1a,
+                   labels = c("(a)", "(b)"))
+#ggsave('bdnf_emm.tiff', dpi = 300)
+```
+\
